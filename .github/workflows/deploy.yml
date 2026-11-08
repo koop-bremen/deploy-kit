@@ -1,0 +1,64 @@
+# Wiederverwendbarer Deploy-Workflow. Überträgt ein signiertes Release an den Forced Command des Servers.
+# Der Server prüft die Signatur selbst; dieser Workflow ist nur Transport und kann keine Freigabe ersetzen.
+name: deploy-kit deploy
+
+on:
+  workflow_call:
+    inputs:
+      app:     { required: true,  type: string }
+      tag:     { required: true,  type: string }
+      host:    { required: true,  type: string }
+      user:    { required: false, type: string, default: "deploy" }
+      port:    { required: false, type: string, default: "22" }
+      kit_ref: { required: false, type: string, default: "v1" }
+    secrets:
+      DEPLOY_SSH_KEY:     { required: true }
+      DEPLOY_KNOWN_HOSTS: { required: true }
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency: { group: "deploy-${{ inputs.app }}", cancel-in-progress: false }
+    steps:
+      - name: Eingaben prüfen
+        env: { TAG: "${{ inputs.tag }}", PORT: "${{ inputs.port }}" }
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag muss vX.Y.Z sein" >&2; exit 1; }
+          [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || { echo "Port ungültig" >&2; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          repository: koop-bremen/deploy-kit
+          ref: ${{ inputs.kit_ref }}
+          path: .deploy-kit-src
+          persist-credentials: false
+
+      - name: Signiertes Release laden
+        env: { GH_TOKEN: "${{ github.token }}", APP: "${{ inputs.app }}", TAG: "${{ inputs.tag }}" }
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$RUNNER_TEMP/bundle" \
+            -p "$APP-$TAG.tar.gz" -p SHA256SUMS -p SHA256SUMS.sig
+
+      - name: Ausrollen
+        env:
+          APP: ${{ inputs.app }}
+          TAG: ${{ inputs.tag }}
+          DEPLOY_HOST: ${{ inputs.host }}
+          DEPLOY_USER: ${{ inputs.user }}
+          DEPLOY_PORT: ${{ inputs.port }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/id_deploy"
+          printf '%s\n' "$KNOWN" > "$RUNNER_TEMP/known_hosts"
+          DEPLOY_SSH_KEY_FILE="$RUNNER_TEMP/id_deploy" DEPLOY_KNOWN_HOSTS_FILE="$RUNNER_TEMP/known_hosts" \
+            .deploy-kit-src/ci/ship.sh "$APP" "$TAG" "$RUNNER_TEMP/bundle"
+
+      - name: Schlüssel entfernen
+        if: always()
+        run: rm -f "$RUNNER_TEMP/id_deploy" "$RUNNER_TEMP/known_hosts"

@@ -1,0 +1,26 @@
+# deploy/manifest – was zwischen Releases erhalten bleibt. Eine Zeile je Pfad, relativ zum Projekt.
+#
+#   shared-dir  <pfad>   Verzeichnis liegt in <base>/shared/, Release bekommt einen Symlink.
+#                        Fehlt es in shared/, wird es EINMALIG aus dem Release befüllt (Erstdeployment).
+#                        Danach gewinnt immer shared/: Änderungen an diesem Pfad im Git erreichen
+#                        die Produktion nicht mehr.
+#   shared-file <pfad>   dasselbe für eine Datei; fehlt sie überall, darf die App sie anlegen.
+#   writable    <pfad>   pro Release frisch, für die Laufzeit beschreibbar (Caches).
+#
+# Profil Kirby:
+#   shared-dir  content
+#   shared-dir  media
+#   shared-dir  site/accounts
+#   shared-dir  site/sessions
+#   shared-dir  site/logs
+#   shared-file site/config/.salt
+#   shared-file site/config/.license
+#   writable    site/cache
+#
+# Profil Laravel:
+#   shared-dir  storage
+#   shared-file .env
+#   writable    bootstrap/cache
+#   (+ deploy/hooks/pre-activate mit: php artisan migrate --force && php artisan optimize)
+#
+# Profil statische Seite: keine Zeile nötig.

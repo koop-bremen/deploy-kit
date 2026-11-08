@@ -1,0 +1,18 @@
+# Vorlage: in das Projekt-Repo kopieren und APP/SOURCE_DIR anpassen.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: koop-bremen/deploy-kit/.github/workflows/release.yml@v1
+    with:
+      app: APP_NAME            # z. B. dokuplus – muss zu /etc/deploy-kit/<app>/ auf dem Server passen
+      source_dir: "."          # Unterverzeichnis, falls die App nicht im Repo-Wurzelverzeichnis liegt
+      php_version: ""          # z. B. "8.4" für Laravel/Kirby
+      node_version: ""         # z. B. "22" für Astro/Vite

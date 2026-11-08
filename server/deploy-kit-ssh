@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Forced Command für den SSH-Benutzer 'deploy'. Ein Schlüssel je App:
+#   restrict,command="/usr/local/bin/deploy-kit-ssh dokuplus" ssh-ed25519 AAAA… ci-dokuplus
+# Der Aufrufer bestimmt nur $SSH_ORIGINAL_COMMAND; erlaubt sind genau
+#   deploy <app> <tag>   (Bündel auf stdin)
+#   status <app>
+# Die App muss der im authorized_keys-Eintrag festgelegten entsprechen. Kein rollback über SSH.
+set -euo pipefail
+ERLAUBT="${1:?App im authorized_keys-Eintrag fehlt}"
+BIN="${DEPLOY_KIT_BIN:-sudo -n /usr/local/sbin/deploy-kit}"
+
+read -r -a ARGS <<< "${SSH_ORIGINAL_COMMAND:-}"
+fail() { echo "deploy-kit-ssh: $*" >&2; exit 2; }
+
+[[ "${ARGS[1]:-}" == "$ERLAUBT" ]] || fail "dieser Schlüssel gilt nur für '$ERLAUBT'"
+case "${ARGS[0]:-}" in
+  deploy) [[ ${#ARGS[@]} -eq 3 && "${ARGS[2]}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "deploy <app> <tag>"
+          # shellcheck disable=SC2086  # BIN ist absichtlich mehrteilig ("sudo -n …")
+          exec $BIN deploy "$ERLAUBT" "${ARGS[2]}" ;;
+  status) [[ ${#ARGS[@]} -eq 2 ]] || fail "status <app>"
+          # shellcheck disable=SC2086
+          exec $BIN status "$ERLAUBT" ;;
+  *) fail "erlaubt: 'deploy <app> <tag>' oder 'status <app>'" ;;
+esac

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Freigabe eines Releases durch dich – lokal auf deinem Laptop, mit deinem (FIDO2-)Schlüssel.
+#
+#   ops/deploy-sign <owner/repo> <app> <tag> [--deploy]
+#
+# 1. lädt Archiv und SHA256SUMS des Releases (gh CLI),
+# 2. prüft die Prüfsumme und zeigt App, Tag und Commit aus dem Artefakt,
+# 3. vergleicht den Commit mit dem lokalen Tag, wenn du im Repo-Checkout stehst,
+# 4. signiert SHA256SUMS (ssh-keygen -Y sign, Namespace deploy-kit) und lädt SHA256SUMS.sig hoch,
+# 5. startet mit --deploy den Deploy-Workflow.
+#
+# Schlüssel: DEPLOY_KIT_SIGNING_KEY (Standard ~/.ssh/id_ed25519_sk). Mit einem sk-Schlüssel ist für
+# jede Freigabe eine Berührung des Tokens nötig – das ist der Punkt.
+set -euo pipefail
+REPO="${1:?owner/repo}"; APP="${2:?app}"; TAG="${3:?tag}"; DEPLOY="${4:-}"
+KEY="${DEPLOY_KIT_SIGNING_KEY:-$HOME/.ssh/id_ed25519_sk}"
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag muss vX.Y.Z sein" >&2; exit 2; }
+[[ -f "$KEY" ]] || { echo "Signierschlüssel $KEY fehlt" >&2; exit 2; }
+command -v gh >/dev/null || { echo "gh CLI fehlt" >&2; exit 2; }
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+ARCHIV="$APP-$TAG.tar.gz"
+gh release download "$TAG" -R "$REPO" -p "$ARCHIV" -p SHA256SUMS -D "$TMP"
+(cd "$TMP" && sha256sum --strict --quiet -c SHA256SUMS) || { echo "Prüfsumme stimmt nicht" >&2; exit 3; }
+[[ "$(wc -l < "$TMP/SHA256SUMS")" -eq 1 ]] || { echo "SHA256SUMS hat mehr als eine Zeile" >&2; exit 3; }
+
+tar -xzf "$TMP/$ARCHIV" -C "$TMP" ./.deploy-kit/RELEASE
+echo "---- Artefakt ----"; cat "$TMP/.deploy-kit/RELEASE"; cat "$TMP/SHA256SUMS"
+grep -qx "app=$APP" "$TMP/.deploy-kit/RELEASE" && grep -qx "tag=$TAG" "$TMP/.deploy-kit/RELEASE" \
+  || { echo "RELEASE passt nicht zu $APP $TAG" >&2; exit 3; }
+COMMIT="$(sed -n 's/^commit=//p' "$TMP/.deploy-kit/RELEASE")"
+if LOKAL="$(git rev-list -n1 "$TAG" 2>/dev/null)"; then
+  [[ "$LOKAL" == "$COMMIT" ]] || { echo "ACHTUNG: lokaler Tag $TAG zeigt auf $LOKAL, Artefakt auf $COMMIT" >&2; exit 3; }
+  echo "Commit stimmt mit lokalem Tag überein."
+else
+  echo "Hinweis: nicht im Repo-Checkout – Commit $COMMIT nicht lokal gegengeprüft."
+fi
+
+read -r -p "Release $APP $TAG freigeben und signieren? [j/N] " antwort
+[[ "$antwort" == j ]] || { echo "abgebrochen"; exit 1; }
+ssh-keygen -Y sign -f "$KEY" -n deploy-kit "$TMP/SHA256SUMS"
+gh release upload "$TAG" -R "$REPO" "$TMP/SHA256SUMS.sig" --clobber
+echo "Signatur hochgeladen."
+if [[ "$DEPLOY" == --deploy ]]; then
+  gh workflow run deploy.yml -R "$REPO" -f tag="$TAG"
+  echo "Deploy-Workflow gestartet: gh run list -R $REPO --workflow deploy.yml"
+fi

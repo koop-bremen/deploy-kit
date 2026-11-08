@@ -1,0 +1,56 @@
+# Wiederverwendbarer Release-Workflow. Aufruf aus einem Projekt: templates/project/.github/workflows/release.yml
+# Baut bei einem Tag vX.Y.Z das Artefakt und legt das GitHub-Release mit Archiv + SHA256SUMS an.
+# Es wird NICHT ausgerollt. Ausrollen setzt deine Signatur voraus (ops/deploy-sign).
+name: deploy-kit release
+
+on:
+  workflow_call:
+    inputs:
+      app:          { required: true,  type: string }
+      source_dir:   { required: false, type: string, default: "." }
+      php_version:  { required: false, type: string, default: "" }
+      node_version: { required: false, type: string, default: "" }
+      kit_ref:      { required: false, type: string, default: "v1" }
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Tag prüfen
+        env: { REF_TYPE: "${{ github.ref_type }}", TAG: "${{ github.ref_name }}" }
+        run: |
+          [[ "$REF_TYPE" == tag && "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "nur für Tags vX.Y.Z" >&2; exit 1; }
+
+      # Vor produktivem Einsatz auf Commit-SHAs pinnen.
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+
+      - uses: actions/checkout@v4
+        with:
+          repository: koop-bremen/deploy-kit
+          ref: ${{ inputs.kit_ref }}
+          path: .deploy-kit-src
+          persist-credentials: false
+
+      - if: inputs.php_version != ''
+        uses: shivammathur/setup-php@v2
+        with: { php-version: "${{ inputs.php_version }}", tools: composer, coverage: none }
+
+      - if: inputs.node_version != ''
+        uses: actions/setup-node@v4
+        with: { node-version: "${{ inputs.node_version }}" }
+
+      - name: Artefakt bauen
+        env: { APP: "${{ inputs.app }}", TAG: "${{ github.ref_name }}", SRC: "${{ inputs.source_dir }}" }
+        run: .deploy-kit-src/ci/package.sh "$APP" "$TAG" "$SRC" "$RUNNER_TEMP/out"
+
+      - name: Release anlegen
+        env: { GH_TOKEN: "${{ github.token }}", APP: "${{ inputs.app }}", TAG: "${{ github.ref_name }}" }
+        run: |
+          gh release create "$TAG" --verify-tag --title "$TAG" \
+            --notes "Artefakt gebaut, noch NICHT freigegeben. Freigabe: ops/deploy-sign $GITHUB_REPOSITORY $APP $TAG --deploy" \
+            "$RUNNER_TEMP/out/$APP-$TAG.tar.gz" "$RUNNER_TEMP/out/SHA256SUMS"

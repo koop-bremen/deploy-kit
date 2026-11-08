@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# deploy-kit – Serverseite des einheitlichen Deployments (KOOP Bremen).
+#
+#   deploy-kit deploy   <app> <tag>    Bündel (tar) auf stdin: <app>-<tag>.tar.gz, SHA256SUMS, SHA256SUMS.sig
+#   deploy-kit rollback <app> [<tag>]  nur lokal als root; NICHT über SSH erreichbar
+#   deploy-kit status   <app>
+#
+# Vertrauensanker ist ausschließlich /etc/deploy-kit/<app>/allowed_signers auf diesem Server.
+# Nichts, was über die Leitung kommt (CI, GitHub, Forge), kann eine Freigabe ersetzen.
+set -euo pipefail
+umask 027
+
+ETC="${DEPLOY_KIT_ETC:-/etc/deploy-kit}"
+LOCKDIR="${DEPLOY_KIT_LOCKDIR:-/run/lock}"
+LOGDIR="${DEPLOY_KIT_LOGDIR:-/var/log/deploy-kit}"
+TESTMODE="${DEPLOY_KIT_TESTMODE:-0}"          # nur tests/run.sh: kein chown, kein Benutzerwechsel
+MAX_BYTES="${DEPLOY_KIT_MAX_BYTES:-536870912}" # 512 MiB je Bündel
+NAMESPACE="deploy-kit"
+APP_RE='^[a-z][a-z0-9-]{1,30}$'
+TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
+PATH_RE='^[A-Za-z0-9_][A-Za-z0-9._/-]*$'
+
+APP=""; INBOX=""; STAGING=""
+log() {
+  local zeile
+  zeile="$(date -u +%FT%TZ) ${APP:-?} $*"
+  echo "$zeile" >&2
+  if [[ -n "$APP" && -d "$LOGDIR" && -w "$LOGDIR" ]]; then echo "$zeile" >> "$LOGDIR/$APP.log"; fi
+}
+die() { log "FEHLER: $1"; exit "${2:-1}"; }
+
+# ---------------------------------------------------------------- Konfiguration
+# /etc/deploy-kit/<app>/app.conf: KEY=VALUE, nur bekannte Schlüssel, wird nicht per `source` geladen.
+BASE=""; RUN_USER=""; RELOAD_CMD=""; HEALTH_URL=""; HEALTH_RESOLVE=""; HEALTH_RETRIES=5; KEEP=5; BACKUP_CMD=""; REQUIRE_SIGNATURE=1
+load_conf() {
+  local conf="$ETC/$APP/app.conf" key val
+  [[ -f "$conf" ]] || die "keine Konfiguration $conf" 10
+  while IFS='=' read -r key val; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+      BASE|RUN_USER|RELOAD_CMD|HEALTH_URL|HEALTH_RESOLVE|HEALTH_RETRIES|KEEP|BACKUP_CMD|REQUIRE_SIGNATURE) printf -v "$key" '%s' "$val" ;;
+      *) die "unbekannter Schlüssel '$key' in $conf" 10 ;;
+    esac
+  done < "$conf"
+  [[ "$BASE" == /* && "$BASE" != "/" && -d "$BASE" ]] || die "BASE ungültig: '$BASE'" 10
+  [[ "$TESTMODE" == 1 || -n "$RUN_USER" ]] || die "RUN_USER fehlt" 10
+  [[ "$KEEP" =~ ^[0-9]+$ && "$KEEP" -ge 2 ]] || die "KEEP muss >= 2 sein" 10
+  [[ "$HEALTH_RETRIES" =~ ^[0-9]+$ ]] || die "HEALTH_RETRIES ungültig" 10
+  mkdir -p "$BASE/releases" "$BASE/shared"
+}
+
+check_app() { [[ "$1" =~ $APP_RE ]] || die "ungültiger App-Name" 2; APP="$1"; }
+check_tag() { [[ "$1" =~ $TAG_RE ]] || die "ungültiger Tag '$1' (erwartet vX.Y.Z)" 2; }
+
+lock() {
+  exec 9> "$LOCKDIR/deploy-kit-$APP.lock"
+  flock -n 9 || die "ein anderes Deployment für $APP läuft" 60
+}
+
+current_tag() { local t; t="$(readlink "$BASE/current" 2>/dev/null || true)"; echo "${t##*/}"; }
+# true, wenn $1 < $2 (SemVer ohne Prerelease)
+version_lt() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | head -n1)" == "${1#v}" ]]; }
+
+as_app() { if [[ "$TESTMODE" == 1 ]]; then "$@"; else runuser -u "$RUN_USER" -- "$@"; fi; }
+own() { [[ "$TESTMODE" == 1 ]] || chown "$@"; }
+
+switch_to() { # $1 = Tag
+  ln -sfn "releases/$1" "$BASE/.current.new"
+  mv -Tf "$BASE/.current.new" "$BASE/current"
+  if [[ -n "$RELOAD_CMD" ]]; then bash -c "$RELOAD_CMD" || log "WARNUNG: RELOAD_CMD fehlgeschlagen"; fi
+}
+
+healthy() {
+  [[ -z "$HEALTH_URL" ]] && { log "WARNUNG: kein HEALTH_URL gesetzt, Health-Check übersprungen"; return 0; }
+  local i opts=()
+  # HEALTH_RESOLVE=domain:443:127.0.0.1 prüft den neuen Server, bevor DNS umgestellt ist.
+  [[ -n "$HEALTH_RESOLVE" ]] && opts=(--resolve "$HEALTH_RESOLVE")
+  for ((i = 1; i <= HEALTH_RETRIES; i++)); do
+    if curl -fsS -o /dev/null --max-time 10 "${opts[@]}" "$HEALTH_URL"; then return 0; fi
+    sleep "${DEPLOY_KIT_HEALTH_SLEEP:-2}"
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------- Bündel prüfen
+verify_bundle() { # $1 = Eingangsverzeichnis, $2 = Tag → setzt SIGNER
+  local inbox="$1" tag="$2" archiv="$APP-$2.tar.gz" erwartet eintraege
+  erwartet="$(printf '%s\n' "$archiv" SHA256SUMS SHA256SUMS.sig | sort)"
+  eintraege="$(tar -tf "$inbox/bundle.tar" | sort)" || die "Bündel ist kein tar" 31
+  if [[ "$REQUIRE_SIGNATURE" == 0 ]]; then
+    erwartet="$(printf '%s\n' "$archiv" SHA256SUMS | sort)"
+    [[ "$eintraege" == "$erwartet" || "$eintraege" == "$(printf '%s\n' "$archiv" SHA256SUMS SHA256SUMS.sig | sort)" ]] \
+      || die "Bündel enthält unerwartete Einträge" 31
+  else
+    [[ "$eintraege" == "$erwartet" ]] || die "Bündel muss genau $archiv, SHA256SUMS, SHA256SUMS.sig enthalten" 31
+  fi
+  # Vor dem Auspacken (läuft als root): nur reguläre Dateien – keine Sym-/Hardlinks, Geräte, Verzeichnisse.
+  [[ "$(tar -tvf "$inbox/bundle.tar" | cut -c1 | sort -u)" == "-" ]] || die "Bündel enthält Nicht-Dateien" 31
+  tar -xf "$inbox/bundle.tar" -C "$inbox" --no-same-owner --no-same-permissions
+  local f
+  for f in $eintraege; do [[ -f "$inbox/$f" && ! -L "$inbox/$f" ]] || die "$f ist keine reguläre Datei" 31; done
+
+  # Genau eine Zeile, genau dieses Archiv: bindet die Signatur an App und Tag (kein Umetikettieren).
+  grep -qxE "[0-9a-f]{64}  $(printf '%s' "$archiv" | sed 's/[.]/\\./g')" "$inbox/SHA256SUMS" \
+    && [[ "$(wc -l < "$inbox/SHA256SUMS")" -eq 1 ]] || die "SHA256SUMS passt nicht zu $archiv" 32
+
+  SIGNER="(ohne Signatur)"
+  if [[ "$REQUIRE_SIGNATURE" == 1 ]]; then
+    local signers="$ETC/$APP/allowed_signers"
+    [[ -s "$signers" ]] || die "keine allowed_signers für $APP" 23
+    SIGNER="$(ssh-keygen -Y find-principals -s "$inbox/SHA256SUMS.sig" -f "$signers" 2>/dev/null | head -n1)" \
+      || die "Signatur von unbekanntem Schlüssel" 20
+    [[ -n "$SIGNER" ]] || die "Signatur von unbekanntem Schlüssel" 20
+    ssh-keygen -Y verify -f "$signers" -I "$SIGNER" -n "$NAMESPACE" -s "$inbox/SHA256SUMS.sig" \
+      < "$inbox/SHA256SUMS" >/dev/null 2>&1 || die "Signatur ungültig" 20
+  fi
+  (cd "$inbox" && sha256sum --strict --quiet -c SHA256SUMS) || die "Prüfsumme stimmt nicht" 33
+  log "Bündel geprüft: $archiv, freigegeben von $SIGNER"
+}
+
+# ---------------------------------------------------------------- Release vorbereiten
+link_shared() { # $1 = Release-Verzeichnis, $2 = dir|file, $3 = Pfad
+  local rel="$1" art="$2" pfad="$3" ziel="$BASE/shared/$3"
+  [[ "$pfad" =~ $PATH_RE && "$pfad" != *..* ]] || die "unzulässiger Pfad im Manifest: $pfad" 34
+  if [[ ! -e "$ziel" ]]; then
+    mkdir -p "$(dirname "$ziel")"
+    # Die App muss eine fehlende Datei (z. B. Kirbys .salt) selbst anlegen können.
+    own "$RUN_USER:$RUN_USER" "$(dirname "$ziel")"
+    if [[ -e "$rel/$pfad" ]]; then cp -a "$rel/$pfad" "$ziel"; log "shared/$pfad aus dem Release angelegt (Erstbefüllung)"
+    elif [[ "$art" == dir ]]; then mkdir -p "$ziel"; fi
+    [[ -e "$ziel" ]] && own -R "$RUN_USER:$RUN_USER" "$ziel"
+  fi
+  rm -rf "${rel:?}/$pfad"
+  mkdir -p "$(dirname "$rel/$pfad")"
+  ln -s "$ziel" "$rel/$pfad"
+}
+
+stage_release() { # $1 = Eingang, $2 = Tag
+  local inbox="$1" tag="$2" neu="$BASE/releases/.$2.new" rel="$BASE/releases/$2"
+  local summe; summe="$(cut -d' ' -f1 "$inbox/SHA256SUMS")"
+  if [[ -d "$rel" ]]; then
+    grep -qx "sha256=$summe" "$rel/.deploy-kit/VERIFIED" 2>/dev/null \
+      || die "releases/$tag existiert mit anderem Inhalt" 35
+    log "releases/$tag bereits installiert und geprüft – wird wiederverwendet"; return 0
+  fi
+  rm -rf "$neu"; mkdir -p "$neu"
+  tar -xzf "$inbox/$APP-$tag.tar.gz" -C "$neu" --no-same-owner --no-same-permissions
+  local meta="$neu/.deploy-kit/RELEASE"
+  [[ -f "$meta" ]] || die "Artefakt ohne .deploy-kit/RELEASE" 34
+  grep -qx "app=$APP" "$meta" && grep -qx "tag=$tag" "$meta" || die "RELEASE passt nicht zu $APP $tag" 34
+
+  local art pfad
+  if [[ -f "$neu/.deploy-kit/manifest" ]]; then
+    while read -r art pfad; do
+      [[ -z "$art" || "$art" == \#* ]] && continue
+      case "$art" in
+        shared-dir)  link_shared "$neu" dir "$pfad" ;;
+        shared-file) link_shared "$neu" file "$pfad" ;;
+        writable)    [[ "$pfad" =~ $PATH_RE && "$pfad" != *..* ]] || die "unzulässiger Pfad: $pfad" 34
+                     mkdir -p "$neu/$pfad" ;;
+        *) die "unbekannte Manifest-Zeile: $art" 34 ;;
+      esac
+    done < "$neu/.deploy-kit/manifest"
+  fi
+  # Code gehört root und ist für die Laufzeit nur lesbar; beschreibbar ist nur shared/ und 'writable'.
+  own -R "root:${RUN_USER:-root}" "$neu"
+  chmod -R u=rwX,g=rX,o= "$neu"
+  if [[ -f "$neu/.deploy-kit/manifest" ]]; then
+    while read -r art pfad; do
+      [[ "$art" == writable ]] && { own -R "$RUN_USER" "$neu/$pfad"; chmod -R u+w "$neu/$pfad"; }
+    done < "$neu/.deploy-kit/manifest"
+  fi
+  printf 'sha256=%s\nsigner=%s\ninstalled=%s\n' "$summe" "$SIGNER" "$(date -u +%FT%TZ)" > "$neu/.deploy-kit/VERIFIED"
+  mv -T "$neu" "$rel"
+}
+
+prune() {
+  local cur prev="$1" t
+  cur="$(current_tag)"
+  mapfile -t alle < <(find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d -name 'v*' -printf '%f\n' | sort -V)
+  local zu_viel=$(( ${#alle[@]} - KEEP ))
+  for t in "${alle[@]}"; do
+    (( zu_viel > 0 )) || break
+    [[ "$t" == "$cur" || "$t" == "$prev" ]] && continue
+    rm -rf "${BASE:?}/releases/$t"; log "altes Release $t entfernt"; zu_viel=$((zu_viel - 1))
+  done
+}
+
+# ---------------------------------------------------------------- Befehle
+cmd_deploy() {
+  local tag="$1" cur
+  load_conf; lock
+  cur="$(current_tag)"
+  if [[ "$cur" == "$tag" ]]; then cat > /dev/null; log "$tag ist bereits aktiv – nichts zu tun"; return 0; fi
+  if [[ -n "$cur" ]] && version_lt "$tag" "$cur"; then
+    cat > /dev/null; die "$tag ist älter als aktives $cur – Rückschritt nur per 'rollback' am Server" 25
+  fi
+  INBOX="$(mktemp -d "$BASE/.inbox.XXXXXX")"; STAGING="$BASE/releases/.$tag.new"
+  trap 'rm -rf "${INBOX:-}" "${STAGING:-}"' EXIT
+  head -c "$((MAX_BYTES + 1))" > "$INBOX/bundle.tar"
+  [[ "$(stat -c %s "$INBOX/bundle.tar")" -le "$MAX_BYTES" ]] || die "Bündel größer als $MAX_BYTES Byte" 31
+
+  verify_bundle "$INBOX" "$tag"
+  stage_release "$INBOX" "$tag"
+  local rel="$BASE/releases/$tag"
+
+  if [[ -n "$BACKUP_CMD" ]]; then
+    DEPLOY_KIT_APP="$APP" DEPLOY_KIT_BASE="$BASE" DEPLOY_KIT_TAG="$tag" bash -c "$BACKUP_CMD" \
+      || die "Sicherung fehlgeschlagen – nichts aktiviert" 40
+    log "Sicherung erstellt"
+  fi
+  if [[ -x "$rel/.deploy-kit/hooks/pre-activate" ]]; then
+    (cd "$rel" && as_app env DEPLOY_KIT_APP="$APP" DEPLOY_KIT_TAG="$tag" DEPLOY_KIT_SHARED="$BASE/shared" \
+      ./.deploy-kit/hooks/pre-activate) || die "pre-activate fehlgeschlagen – nichts aktiviert" 40
+  fi
+
+  switch_to "$tag"
+  log "aktiv: $tag (vorher: ${cur:-keins})"
+  if ! healthy; then
+    if [[ -n "$cur" ]]; then switch_to "$cur"; die "Health-Check fehlgeschlagen – zurück auf $cur" 41; fi
+    die "Health-Check fehlgeschlagen – kein Vorgänger zum Zurückschalten" 41
+  fi
+  prune "$cur"
+  log "Deployment $tag erfolgreich"
+}
+
+cmd_rollback() {
+  local ziel="${1:-}" cur
+  load_conf; lock
+  cur="$(current_tag)"
+  if [[ -z "$ziel" ]]; then
+    ziel="$(find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d -name 'v*' -printf '%f\n' | sort -V \
+            | awk -v c="$cur" '$0 == c { print prev; exit } { prev = $0 }')"
+    [[ -n "$ziel" ]] || die "kein älteres Release vorhanden" 42
+  fi
+  check_tag "$ziel"
+  [[ -f "$BASE/releases/$ziel/.deploy-kit/VERIFIED" ]] || die "releases/$ziel fehlt oder ist nicht geprüft" 42
+  switch_to "$ziel"
+  log "Rollback: $cur → $ziel"
+  healthy || die "Health-Check nach Rollback fehlgeschlagen – bitte manuell prüfen" 41
+}
+
+cmd_status() {
+  load_conf
+  echo "app=$APP aktiv=$(current_tag)"
+  find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d -name 'v*' -printf '%f\n' | sort -V | while read -r t; do
+    printf '  %s %s\n' "$t" "$(grep -h '^installed=' "$BASE/releases/$t/.deploy-kit/VERIFIED" 2>/dev/null || echo 'UNGEPRÜFT')"
+  done
+}
+
+case "${1:-}" in
+  deploy)   [[ $# -eq 3 ]] || die "deploy <app> <tag>" 2; check_app "$2"; check_tag "$3"; cmd_deploy "$3" ;;
+  rollback) [[ $# -ge 2 && $# -le 3 ]] || die "rollback <app> [<tag>]" 2; check_app "$2"; cmd_rollback "${3:-}" ;;
+  status)   [[ $# -eq 2 ]] || die "status <app>" 2; check_app "$2"; cmd_status ;;
+  *) echo "Verwendung: deploy-kit {deploy <app> <tag> | rollback <app> [<tag>] | status <app>}" >&2; exit 2 ;;
+esac

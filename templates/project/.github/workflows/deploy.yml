@@ -1,0 +1,24 @@
+# Vorlage: in das Projekt-Repo kopieren und APP anpassen.
+# Repo-Variablen: DEPLOY_HOST, DEPLOY_PORT · Repo-Secrets: DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS
+# Start: ops/deploy-sign <owner/repo> <app> <tag> --deploy   (oder: gh workflow run deploy.yml -f tag=vX.Y.Z)
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag: { description: "Signiertes Release vX.Y.Z", required: true, type: string }
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    uses: koop-bremen/deploy-kit/.github/workflows/deploy.yml@v1
+    with:
+      app: APP_NAME
+      tag: ${{ inputs.tag }}
+      host: ${{ vars.DEPLOY_HOST }}
+      port: ${{ vars.DEPLOY_PORT }}
+    secrets:
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
