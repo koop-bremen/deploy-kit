@@ -23,14 +23,25 @@ jobs:
         run: |
           set -euo pipefail
           locks="$(git ls-files '*package-lock.json' '*pnpm-lock.yaml' '*yarn.lock' '*composer.lock' '*requirements*.txt' '*uv.lock' '*poetry.lock')"
+          # Ein Lockfile im selben oder einem übergeordneten Verzeichnis (Workspaces) muss committet sein.
+          fehlt=0
           for m in $(git ls-files '*package.json' | grep -v node_modules); do
-            d="$(dirname "$m")"
-            ls "$d"/package-lock.json "$d"/pnpm-lock.yaml "$d"/yarn.lock >/dev/null 2>&1 \
-              || { echo "::error file=$m::package.json ohne committetes Lockfile"; exit 1; }
+            d="$(dirname "$m")"; gefunden=0
+            while :; do
+              for l in package-lock.json pnpm-lock.yaml yarn.lock; do
+                git ls-files --error-unmatch "$d/$l" >/dev/null 2>&1 && gefunden=1
+              done
+              [[ $gefunden == 1 || "$d" == "." ]] && break
+              d="$(dirname "$d")"
+            done
+            [[ $gefunden == 1 ]] || { echo "::error file=$m::package.json ohne committetes Lockfile"; fehlt=1; }
           done
+          [[ $fehlt == 0 ]] || exit 1
           bad=0
           for f in $(git ls-files '*package-lock.json'); do
-            if grep -oE '"resolved": "[^"]+"' "$f" | grep -vE '"https://registry\.npmjs\.org/' ; then
+            # Workspace-Pfade ("packages/ui") sind lokal und erlaubt; alles mit Schema muss die npm-Registry sein.
+            if grep -oE '"resolved": "[^"]+"' "$f" | grep -E '"(git\+|git:|file:|[a-z]+://)' \
+                 | grep -vE '"https://registry\.npmjs\.org/' ; then
               echo "::error file=$f::Paket aus fremder Quelle (git, http, tarball-URL)"; bad=1
             fi
           done
@@ -43,7 +54,10 @@ jobs:
         env: { V: "${{ inputs.osv_version }}" }
         run: |
           go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@$V"
-          "$(go env GOPATH)/bin/osv-scanner" scan source --recursive .
+          # Exit 1 = Schwachstellen gefunden, 128 = keine auswertbaren Lockfiles (z. B. nur pyproject.toml).
+          rc=0; "$(go env GOPATH)/bin/osv-scanner" scan source --recursive . || rc=$?
+          if [[ $rc == 128 ]]; then echo "::warning::keine Lockfiles gefunden, die OSV auswerten kann"; exit 0; fi
+          exit $rc
 
       - name: npm-Signaturen und Provenance
         run: |
