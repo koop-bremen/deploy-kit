@@ -62,8 +62,9 @@ server/install.sh        Ersteinrichtung: 'kit' einmal je Server, 'app' einmal j
 ci/package.sh            baut <app>-<tag>.tar.gz + SHA256SUMS aus dem committeten Stand
 ci/ship.sh               überträgt das Bündel an den Forced Command (known_hosts ist Pflicht)
 ops/deploy-sign          deine Freigabe: prüfen, signieren, hochladen, Deploy starten
-.github/workflows/       wiederverwendbare Workflows release.yml und deploy.yml
-templates/project/       Vorlagen für ein Projekt-Repo (Workflows + deploy/manifest)
+.github/workflows/       wiederverwendbare Workflows: release, deploy, deps-audit, dependabot-automerge
+templates/project/       Vorlagen für ein Projekt-Repo (Workflows, deploy/manifest, dependabot.yml, .npmrc)
+docs/UPDATES.md          Update- und Lieferketten-Strategie (Dependabot, OSV, npm-Härtung)
 tests/run.sh             Ende-zu-Ende-Test (31 Prüfungen, ohne root, ohne Netz)
 ```
 

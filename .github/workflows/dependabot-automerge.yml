@@ -1,0 +1,63 @@
+# Wiederverwendbar: merged Dependabot-PRs automatisch, wenn die CI grün ist und das Update klein ist.
+# Aufruf über templates/project/.github/workflows/dependabot-automerge.yml (Trigger: workflow_run der CI).
+#
+# Automatisch gemerged wird nur:
+#   - semver-patch (Produktion und Entwicklung)
+#   - semver-minor von Entwicklungs- und indirekten Abhängigkeiten
+# Nie automatisch: Major-Updates, Minor-Updates direkter Produktionsabhängigkeiten, PRs mit fremden Commits.
+#
+# Ein Merge nach main rollt NICHTS aus. Produktion braucht weiterhin Tag + deine Signatur.
+# Warum kein "gh pr merge --auto": das setzt Branch Protection voraus, die es im Free-Plan für private Repos nicht gibt.
+name: deploy-kit dependabot-automerge
+
+on:
+  workflow_call:
+    inputs:
+      head_sha: { required: true, type: string }
+      head_branch: { required: true, type: string }
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    if: startsWith(inputs.head_branch, 'dependabot/')
+    steps:
+      - name: Prüfen und mergen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.head_sha }}
+          BRANCH: ${{ inputs.head_branch }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list -R "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number,headRefOid,author \
+                 --jq ".[] | select(.headRefOid == \"$SHA\") | .number")"
+          [[ -n "$pr" ]] || { echo "kein offener PR mit genau diesem Stand – nichts zu tun"; exit 0; }
+
+          # Nur Commits von Dependabot. Hat jemand (oder ein Agent) nachgeschoben, wird nicht automatisch gemerged.
+          fremd="$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json commits \
+                   --jq '[.commits[].authors[].login] | map(select(. != "dependabot[bot]")) | length')"
+          [[ "$fremd" == 0 ]] || { echo "PR #$pr enthält fremde Commits – manuell prüfen"; exit 0; }
+
+          # Dependabot schreibt die Update-Art als Metadaten in die Commit-Nachricht.
+          meta="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA" --jq .commit.message)"
+          typen="$(printf '%s\n' "$meta" | sed -n 's/^ *update-type: //p' | sort -u)"
+          arten="$(printf '%s\n' "$meta" | sed -n 's/^ *dependency-type: //p' | sort -u)"
+          echo "update-type: $typen"; echo "dependency-type: $arten"
+          [[ -n "$typen" ]] || { echo "keine Dependabot-Metadaten – manuell prüfen"; exit 0; }
+
+          ok=1
+          while read -r t; do
+            case "$t" in
+              version-update:semver-patch) ;;
+              version-update:semver-minor)
+                if printf '%s\n' "$arten" | grep -qx 'direct:production'; then ok=0; fi ;;
+              *) ok=0 ;;
+            esac
+          done <<< "$typen"
+          [[ "$ok" == 1 ]] || { echo "PR #$pr braucht eine manuelle Prüfung ($typen)"; exit 0; }
+
+          gh pr merge "$pr" -R "$GITHUB_REPOSITORY" --squash --match-head-commit "$SHA" --delete-branch
+          echo "PR #$pr gemerged."

@@ -1,0 +1,22 @@
+# Name "CI" an den Namen des eigenen Test-Workflows anpassen. Ohne Tests KEIN Automerge einrichten.
+name: Dependabot automerge
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    uses: koop-bremen/deploy-kit/.github/workflows/dependabot-automerge.yml@v1
+    with:
+      head_sha: ${{ github.event.workflow_run.head_sha }}
+      head_branch: ${{ github.event.workflow_run.head_branch }}

@@ -1,0 +1,44 @@
+# Vorlage deploy-kit: nicht benötigte Ökosysteme löschen, Verzeichnisse anpassen.
+# Sicherheitsupdates kommen sofort (unabhängig von schedule/cooldown, sobald Dependabot-Alerts
+# und -Security-Updates in den Repo-Einstellungen aktiv sind). Versionsupdates kommen gebündelt
+# einmal pro Woche, erst nach einer Wartezeit: ein frisch kompromittiertes Paket ist bis dahin
+# meist entdeckt und zurückgezogen.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    cooldown: { default-days: 7, semver-patch-days: 3, semver-major-days: 30 }
+    open-pull-requests-limit: 5
+    groups:
+      npm-klein:
+        update-types: [patch, minor]
+    commit-message: { prefix: "deps", include: scope }
+
+  - package-ecosystem: composer
+    directory: "/"
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    cooldown: { default-days: 7, semver-patch-days: 3, semver-major-days: 30 }
+    open-pull-requests-limit: 5
+    groups:
+      composer-klein:
+        update-types: [patch, minor]
+    commit-message: { prefix: "deps", include: scope }
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 5
+    groups:
+      pip-klein:
+        update-types: [patch, minor]
+
+  # Auch die Actions selbst sind Abhängigkeiten (und ein beliebter Angriffsweg).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Berlin }
+    cooldown: { default-days: 7 }
+    groups:
+      actions:
+        patterns: ["*"]

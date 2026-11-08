@@ -1,0 +1,55 @@
+# Wiederverwendbarer Abhängigkeits-Check. Aufruf: templates/project/.github/workflows/deps-audit.yml
+# Läuft bei jedem PR und täglich gegen main. Unabhängig von Dependabot: OSV-Datenbank statt GitHub-Advisories,
+# dazu Herkunfts- und Signaturprüfung der npm-Pakete.
+name: deploy-kit deps-audit
+
+on:
+  workflow_call:
+    inputs:
+      osv_version: { required: false, type: string, default: "v2.7.0" }   # bewusst gepinnt, Stand 2026-10
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+
+      - name: Lockfiles vorhanden und nur offizielle Registries
+        run: |
+          set -euo pipefail
+          locks="$(git ls-files '*package-lock.json' '*pnpm-lock.yaml' '*yarn.lock' '*composer.lock' '*requirements*.txt' '*uv.lock' '*poetry.lock')"
+          for m in $(git ls-files '*package.json' | grep -v node_modules); do
+            d="$(dirname "$m")"
+            ls "$d"/package-lock.json "$d"/pnpm-lock.yaml "$d"/yarn.lock >/dev/null 2>&1 \
+              || { echo "::error file=$m::package.json ohne committetes Lockfile"; exit 1; }
+          done
+          bad=0
+          for f in $(git ls-files '*package-lock.json'); do
+            if grep -oE '"resolved": "[^"]+"' "$f" | grep -vE '"https://registry\.npmjs\.org/' ; then
+              echo "::error file=$f::Paket aus fremder Quelle (git, http, tarball-URL)"; bad=1
+            fi
+          done
+          exit $bad
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "stable" }
+
+      - name: Bekannte Schwachstellen (OSV)
+        env: { V: "${{ inputs.osv_version }}" }
+        run: |
+          go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@$V"
+          "$(go env GOPATH)/bin/osv-scanner" scan source --recursive .
+
+      - name: npm-Signaturen und Provenance
+        run: |
+          set -euo pipefail
+          for f in $(git ls-files '*package-lock.json'); do
+            d="$(dirname "$f")"
+            echo "== $d"
+            (cd "$d" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null && npm audit signatures)
+          done

@@ -1,0 +1,14 @@
+name: Abhängigkeiten prüfen
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 5 * * *"     # täglich, unabhängig davon, ob jemand am Code arbeitet
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    uses: koop-bremen/deploy-kit/.github/workflows/deps-audit.yml@v1

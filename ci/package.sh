@@ -33,7 +33,9 @@ else
     composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
   fi
   if [[ -f package-lock.json ]]; then
-    npm ci --no-audit --no-fund && npm run build && rm -rf node_modules
+    # Install-Skripte laufen nur, wenn das Projekt sie nicht per .npmrc (ignore-scripts=true) abschaltet.
+    # 'npm audit signatures' bricht ab, wenn ein Paket eine ungültige Registry-Signatur oder Provenance hat.
+    npm ci --no-audit --no-fund && npm audit signatures && npm run build && rm -rf node_modules
   fi
 fi
 
