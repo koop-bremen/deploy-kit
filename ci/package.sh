@@ -23,7 +23,10 @@ PREFIX="$(git -C "$SRC" rev-parse --show-prefix)"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$SRC" log -1 --format=%ct)}"
 
 STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
-git -C "$SRC" archive --format=tar "HEAD:$PREFIX" | tar -x -C "$STAGE"
+# Von der Repo-Wurzel aus: Im Unterverzeichnis würde git archive zusätzlich nach $PREFIX filtern,
+# den es im Baum HEAD:$PREFIX nicht gibt – das Archiv wäre leer.
+TOP="$(git -C "$SRC" rev-parse --show-toplevel)"
+git -C "$TOP" archive --format=tar "HEAD:$PREFIX" | tar -x -C "$STAGE"
 cd "$STAGE"
 
 if [[ -x deploy/build.sh ]]; then
