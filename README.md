@@ -66,6 +66,7 @@ ops/deploy-sign          deine Freigabe: prüfen, signieren, hochladen, Deploy s
 templates/project/       Vorlagen für ein Projekt-Repo (Workflows, deploy/manifest, dependabot.yml, .npmrc)
 docs/UPDATES.md          Update- und Lieferketten-Strategie (Dependabot, OSV, npm-Härtung)
 tests/run.sh             Ende-zu-Ende-Test (31 Prüfungen, ohne root, ohne Netz)
+tests/package.sh         Regressionstest ci/package.sh: App an der Wurzel und im Unterverzeichnis (18 Prüfungen)
 ```
 
 Serverlayout je App:
@@ -194,4 +195,5 @@ verfügbar ist, ist nicht geprüft). Andernfalls wird `ci/` pro Projekt kopiert.
 
 ```bash
 tests/run.sh      # erwartet: "gelaufen: 31, fehlgeschlagen: 0"
+tests/package.sh  # erwartet: "gelaufen: 18, fehlgeschlagen: 0"
 ```
