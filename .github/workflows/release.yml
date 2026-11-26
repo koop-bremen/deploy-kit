@@ -26,10 +26,10 @@ jobs:
           [[ "$REF_TYPE" == tag && "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "nur für Tags vX.Y.Z" >&2; exit 1; }
 
       # Vor produktivem Einsatz auf Commit-SHAs pinnen.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: koop-bremen/deploy-kit
           ref: ${{ inputs.kit_ref }}
