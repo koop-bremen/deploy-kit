@@ -47,7 +47,7 @@ jobs:
           done
           exit $bad
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with: { go-version: "stable" }
 
       - name: Bekannte Schwachstellen (OSV)
