@@ -1,16 +1,17 @@
 # deploy-kit – einheitliches Deployment für KOOP-Bremen-Projekte
 
-Stand 2026-11-08 · gilt für **alle neuen Projekte**. Bestehende Projekte werden nach der Liste unten nachgezogen.
+Stand 2026-11-27 · Deploy-Standard: signiertes Release, Deploy durch den Owner · gilt für **alle neuen Projekte**. Bestehende Projekte werden nach der Liste unten nachgezogen.
 
 ## Grundsatz in einem Satz
 
 **Ausgerollt wird nur, was du signiert hast, und das prüft der Server selbst.** GitHub, die CI, `emconlog-web` und
 jeder Coding-Agent können ein Release vorbereiten. Freigeben können sie es nicht.
 
-Warum so und nicht über GitHub-Freigaben: Die Organisation läuft im GitHub-Free-Plan. Für private Repos gibt es dort
-keine Branch Protection, keine Rulesets und keine Environment-Reviewer. Wer Schreibrechte hat (auch ein Agent auf
-`emconlog-web`), kann Workflows ändern und an die Secrets herankommen. Eine Freigabe, die innerhalb von GitHub
-stattfindet, ist deshalb nur Dekoration. Der Server vertraut ausschließlich `/etc/deploy-kit/<app>/allowed_signers`.
+Warum so und nicht über GitHub-Freigaben: Die Organisation läuft seit dem 11.11. im GitHub-Pro-Plan. Rulesets sind
+aktiv, gemergt wird nur durch Hendrik per Bypass. Das schützt den Code im Repo, aber nicht den Rollout: Eine Freigabe
+innerhalb von GitHub liegt auf derselben Plattform wie CI und Secrets und gilt dort nur so weit, wie die Konten und
+Einstellungen dort sicher sind. Der Server vertraut deshalb weiterhin ausschließlich
+`/etc/deploy-kit/<app>/allowed_signers`.
 
 ## Ablauf
 
@@ -105,8 +106,11 @@ echo "operator $(cat ~/.ssh/id_ed25519_sk.pub)" > allowed_signers
 
 **Einmalig je Server** (über deinen Admin-Zugang, nie aus der CI):
 
+deploy-kit ist ein privates Repo, ein `git clone` auf dem Server funktioniert nicht. Das Verzeichnis wird vom Laptop
+über falcon auf den Server kopiert; die Installation läuft dann aus der Kopie:
+
 ```bash
-git clone https://github.com/koop-bremen/deploy-kit && cd deploy-kit
+cd deploy-kit
 sudo server/install.sh kit
 ```
 
@@ -152,7 +156,7 @@ Der SSH-Port des Servers muss für GitHub-Runner erreichbar sein. Für DokuPlus 
    Geheimnisse liegen als `shared-file` auf dem Server.
 6. **Staging ist eine eigene App** (`<app>-staging`) mit eigenem Schlüssel, eigenem `allowed_signers` und optional
    `REQUIRE_SIGNATURE=0`. Staging-Schlüssel erreichen nie die Produktions-App.
-7. **deploy-kit selbst wird nicht über deploy-kit aktualisiert**, sondern per Admin-Zugang (`git pull && sudo server/install.sh kit`).
+7. **deploy-kit selbst wird nicht über deploy-kit aktualisiert.** Der Owner kopiert das Verzeichnis vom Laptop über falcon auf den Server (privates Repo, kein `git pull` dort) und führt `sudo server/install.sh kit` aus.
 
 ## Bewusst nicht abgedeckt
 
@@ -171,6 +175,8 @@ Die Vertrauenskette hängt nicht an GitHub. Bei einem Wechsel ändern sich nur d
 `ops/deploy-sign` (→ `tea` oder API). `ci/package.sh`, `ci/ship.sh` und die gesamte Serverseite bleiben unverändert.
 
 ## Repo-Sichtbarkeit
+
+**Entscheidung offen (Befund 26.11.2026).**
 
 Dieses Repo sollte **öffentlich** sein. Es enthält keine Geheimnisse, die Sicherheit liegt im Schlüssel, nicht im
 Code. Öffentlich funktionieren die wiederverwendbaren Workflows aus jedem privaten Projekt-Repo, und Branch
