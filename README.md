@@ -7,10 +7,11 @@ Stand 2026-11-08 · gilt für **alle neuen Projekte**. Bestehende Projekte werde
 **Ausgerollt wird nur, was du signiert hast, und das prüft der Server selbst.** GitHub, die CI, `emconlog-web` und
 jeder Coding-Agent können ein Release vorbereiten. Freigeben können sie es nicht.
 
-Warum so und nicht über GitHub-Freigaben: Die Organisation läuft im GitHub-Free-Plan. Für private Repos gibt es dort
-keine Branch Protection, keine Rulesets und keine Environment-Reviewer. Wer Schreibrechte hat (auch ein Agent auf
-`emconlog-web`), kann Workflows ändern und an die Secrets herankommen. Eine Freigabe, die innerhalb von GitHub
-stattfindet, ist deshalb nur Dekoration. Der Server vertraut ausschließlich `/etc/deploy-kit/<app>/allowed_signers`.
+Warum so und nicht über GitHub-Freigaben: Die Organisation läuft seit dem 11.11. im GitHub-Pro-Plan. Rulesets sind
+aktiv, gemergt wird nur durch Hendrik per Bypass. Das schützt den Code im Repo, aber nicht den Rollout: Eine Freigabe
+innerhalb von GitHub liegt auf derselben Plattform wie CI und Secrets und gilt dort nur so weit, wie die Konten und
+Einstellungen dort sicher sind. Der Server vertraut deshalb weiterhin ausschließlich
+`/etc/deploy-kit/<app>/allowed_signers`.
 
 ## Ablauf
 
@@ -105,8 +106,11 @@ echo "operator $(cat ~/.ssh/id_ed25519_sk.pub)" > allowed_signers
 
 **Einmalig je Server** (über deinen Admin-Zugang, nie aus der CI):
 
+deploy-kit ist ein privates Repo, ein `git clone` auf dem Server funktioniert nicht. Das Verzeichnis wird vom Laptop
+über falcon auf den Server kopiert; die Installation läuft dann aus der Kopie:
+
 ```bash
-git clone https://github.com/koop-bremen/deploy-kit && cd deploy-kit
+cd deploy-kit
 sudo server/install.sh kit
 ```
 
