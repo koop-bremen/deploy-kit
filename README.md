@@ -1,6 +1,6 @@
 # deploy-kit – einheitliches Deployment für KOOP-Bremen-Projekte
 
-Stand 2026-11-08 · gilt für **alle neuen Projekte**. Bestehende Projekte werden nach der Liste unten nachgezogen.
+Stand 2026-11-27 · Deploy-Standard: signiertes Release, Deploy durch den Owner · gilt für **alle neuen Projekte**. Bestehende Projekte werden nach der Liste unten nachgezogen.
 
 ## Grundsatz in einem Satz
 
@@ -156,7 +156,7 @@ Der SSH-Port des Servers muss für GitHub-Runner erreichbar sein. Für DokuPlus 
    Geheimnisse liegen als `shared-file` auf dem Server.
 6. **Staging ist eine eigene App** (`<app>-staging`) mit eigenem Schlüssel, eigenem `allowed_signers` und optional
    `REQUIRE_SIGNATURE=0`. Staging-Schlüssel erreichen nie die Produktions-App.
-7. **deploy-kit selbst wird nicht über deploy-kit aktualisiert**, sondern per Admin-Zugang (`git pull && sudo server/install.sh kit`).
+7. **deploy-kit selbst wird nicht über deploy-kit aktualisiert.** Der Owner kopiert das Verzeichnis vom Laptop über falcon auf den Server (privates Repo, kein `git pull` dort) und führt `sudo server/install.sh kit` aus.
 
 ## Bewusst nicht abgedeckt
 
@@ -175,6 +175,8 @@ Die Vertrauenskette hängt nicht an GitHub. Bei einem Wechsel ändern sich nur d
 `ops/deploy-sign` (→ `tea` oder API). `ci/package.sh`, `ci/ship.sh` und die gesamte Serverseite bleiben unverändert.
 
 ## Repo-Sichtbarkeit
+
+**Entscheidung offen (Befund 26.11.2026).**
 
 Dieses Repo sollte **öffentlich** sein. Es enthält keine Geheimnisse, die Sicherheit liegt im Schlüssel, nicht im
 Code. Öffentlich funktionieren die wiederverwendbaren Workflows aus jedem privaten Projekt-Repo, und Branch
